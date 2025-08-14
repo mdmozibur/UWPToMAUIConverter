@@ -1,7 +1,8 @@
-﻿using System.Xml.Linq;
+﻿using System.Collections.Immutable;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using UwpToMaui;
 
 public static class UwpToMauiConverter
 {
@@ -36,14 +37,16 @@ public static class UwpToMauiConverter
         { "HorizontalAlignment", "HorizontalOptions" },
         { "VerticalAlignment", "VerticalOptions" },
     };
-    internal static readonly Dictionary<string, ValueTuple<string, string>> XamlPropertyConditionalReplacements = new()
+    internal static readonly Dictionary<string, ImmutableArray<ValueTuple<string, string>>> XamlPropertyConditionalReplacements = new  Dictionary<string, ImmutableArray<ValueTuple<string, string>>>
     {
-        { "FontWeight", ("FontAttributes",  "TextBlock")},
-        { "FontWeight", ("FontAttributes",  "FontIcon")},
-        { "Glyph", ("Text", "FontIcon") },
-        { "BorderThickness", ("StrokeThickness", "Border") },
-        { "BorderBrush", ("Stroke", "Border") },
-        { "CornerRadius", ("StrokeShape", "Border") },
+        { "TextBlock", [("FontWeight", "FontAttributes")] },
+        { "FontIcon",
+            [
+                ("FontWeight", "FontAttributes"),
+                ("Glyph", "Text")
+            ]
+        },
+        { "Border", [("BorderThickness", "StrokeThickness"), ("BorderBrush", "Stroke"), ("CornerRadius", "StrokeShape")] },
     };
 
     // For changing XAML attribute values (e.g., for alignment)
@@ -63,16 +66,23 @@ public static class UwpToMauiConverter
         { "Windows.UI.Xaml.Controls", "Microsoft.Maui.Controls" },
         { "Windows.UI.Xaml.Shapes", "Microsoft.Maui.Controls.Shapes" },
     };
-    
+
     // For converting base classes
     public static readonly Dictionary<string, string> CSharpClassReplacements = new()
     {
+        { "StackPanel", "StackLayout" },
+        { "TextBlock", "Label" },
+        { "TextBox", "Entry" },
+        { "ListViewItem", "ViewCell" },
+        { "ComboBox", "Picker" },
+        { "FontIcon", "Label" },
+        { "ScrollViewer", "ScrollView" },
         { "Panel", "Layout" },
         { "ListViewItem", "ViewCell" },
         { "DependencyObject", "BindableObject" },
         { "RoutedEventArgs", "EventArgs" },
         { "Windows.UI.Color", "Microsoft.Maui.Graphics.Color" },
-        { "Windows.UI.Text.FontWeights", "Microsoft.Maui.FontAttributes" }, // UWP FontWeights is a class of static properties, MAUI is an enum
+        { "Windows.UI.Text.FontWeights", "Microsoft.Maui.FontAttributes" },
         { "Orientation", "StackOrientation" },
         { "Thickness", "Microsoft.Maui.Thickness" }
     };
@@ -156,13 +166,11 @@ public static class UwpToMauiConverter
             {
                 content = content.Replace(replacement.Key, replacement.Value);
             }
-            
+
             // Now, load the string with corrected namespaces into an XDocument
             XDocument doc = XDocument.Parse(content);
             XNamespace mauiNamespace = "http://schemas.microsoft.com/dotnet/2021/maui";
 
-            
-            // Iterate through ALL descendants to perform replacements
             foreach (var element in doc.Descendants())
             {
                 // 1. Rename Controls
@@ -175,18 +183,21 @@ public static class UwpToMauiConverter
                 // 2. Rename Attributes (Properties)
                 var attributesToRename = element.Attributes()
                     .Where(attr => XamlPropertyReplacements.ContainsKey(attr.Name.LocalName) ||
-                                  (XamlPropertyConditionalReplacements.ContainsKey(attr.Name.LocalName) && XamlPropertyConditionalReplacements[attr.Name.LocalName].Item2 == prevElemName)
-                    )
+                    XamlPropertyConditionalReplacements.ContainsKey(prevElemName) && XamlPropertyConditionalReplacements[prevElemName].Any(x => x.Item1 == attr.Name.LocalName))
                     .ToList();
-                
+
                 foreach (var attr in attributesToRename)
                 {
-                    attr.Remove(); // Remove the old attribute
-                    var newAttributeName = XamlPropertyReplacements.ContainsKey(attr.Name.LocalName) ? XamlPropertyReplacements[attr.Name.LocalName] : XamlPropertyConditionalReplacements[attr.Name.LocalName].Item1;
-                    
+                    attr.Remove();
+                    string newAttributeName;
+                    if (XamlPropertyReplacements.ContainsKey(attr.Name.LocalName))
+                        newAttributeName = XamlPropertyReplacements[attr.Name.LocalName];
+                    else 
+                        newAttributeName = XamlPropertyConditionalReplacements[prevElemName].Where(x => x.Item1 == attr.Name.LocalName).FirstOrDefault().Item2;
+
                     // 3. Also change attribute value if needed (e.g., for alignment)
-                    var newValue = XamlValueReplacements.ContainsKey(attr.Value) 
-                                    ? XamlValueReplacements[attr.Value] 
+                    var newValue = XamlValueReplacements.ContainsKey(attr.Value)
+                                    ? XamlValueReplacements[attr.Value]
                                     : attr.Value;
 
                     if (attr.Name.LocalName == "CornerRadius" && !newValue.Trim().StartsWith('{'))
@@ -197,8 +208,14 @@ public static class UwpToMauiConverter
                     element.SetAttributeValue(newAttributeName, newValue);
                 }
             }
-
-            doc.Save(destPath);
+            if (doc.Root?.Name.LocalName == "ResourceDictionary")
+            {
+                ResourceDictionaryConverter.Convert(doc, destPath);
+            }
+            else
+            {
+                doc.Save(destPath);
+            }
         }
         catch (Exception ex)
         {
@@ -220,7 +237,7 @@ public static class UwpToMauiConverter
 
             File.WriteAllText(destPath, newRoot.ToFullString());
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             Console.WriteLine($"-- Could not process C# file {sourcePath}: {ex.Message}. File was copied without conversion.");
             File.Copy(sourcePath, destPath, true);
@@ -228,196 +245,3 @@ public static class UwpToMauiConverter
     }
 }
 
-public class CSharpConversionRewriter : CSharpSyntaxRewriter
-{
-    private readonly Dictionary<string, string> _usingReplacements;
-
-    public CSharpConversionRewriter(Dictionary<string, string> usingReplacements)
-    {
-        _usingReplacements = usingReplacements;
-    }
-
-    // Convert using statements like "using Windows.UI.Xaml;"
-    public override SyntaxNode VisitUsingDirective(UsingDirectiveSyntax node)
-    {
-        string namespaceName = node.Name.ToString();
-        if (_usingReplacements.ContainsKey(namespaceName))
-        {
-            var newName = SyntaxFactory.ParseName(_usingReplacements[namespaceName]);
-            return node.WithName(newName);
-        }
-        return base.VisitUsingDirective(node);
-    }
-
-    // Convert base classes like "public class MyView : Panel" to "... : Layout"
-    public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
-    {
-        if (node.BaseList != null)
-        {
-            var newBaseListTypes = new List<BaseTypeSyntax>();
-            bool listModified = false;
-            foreach (var baseType in node.BaseList.Types)
-            {
-                string baseTypeName = baseType.Type.ToString();
-                if (UwpToMauiConverter.CSharpClassReplacements.ContainsKey(baseTypeName))
-                {
-                    newBaseListTypes.Add(baseType.WithType(SyntaxFactory.ParseTypeName(UwpToMauiConverter.CSharpClassReplacements[baseTypeName])));
-                    listModified = true;
-                }
-                else
-                {
-                    newBaseListTypes.Add(baseType);
-                }
-            }
-
-            if (listModified)
-            {
-                var newSeparatedList = SyntaxFactory.SeparatedList<BaseTypeSyntax>(newBaseListTypes);
-                var newBaseList = node.BaseList.WithTypes(newSeparatedList);
-                node = node.WithBaseList(newBaseList);
-            }
-        }
-        return base.VisitClassDeclaration(node);
-    }
-
-
-    public override SyntaxNode VisitFieldDeclaration(FieldDeclarationSyntax node)
-    {
-        var declaration = node.Declaration;
-        // Check if the field type is DependencyProperty
-        if (declaration.Type is IdentifierNameSyntax typeName && typeName.Identifier.Text == "DependencyProperty")
-        {
-            // Create the new type "BindableProperty", preserving the original's formatting (trivia)
-            var newTypeName = SyntaxFactory.IdentifierName("BindableProperty")
-                .WithTrailingTrivia(typeName.GetTrailingTrivia());
-
-            // Create a new declaration with the updated type
-            var newDeclaration = declaration.WithType(newTypeName);
-
-            // Return the original field node with the new declaration
-            node = node.WithDeclaration(newDeclaration);
-        }
-
-        return base.VisitFieldDeclaration(node);
-    }
-    // Convert types used within code, e.g., "DependencyObject" to "BindableObject"
-    public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
-    {
-        string identifier = node.Identifier.Text;
-        if (UwpToMauiConverter.CSharpClassReplacements.ContainsKey(identifier))
-        {
-            string newIdentifierText = UwpToMauiConverter.CSharpClassReplacements[identifier];
-
-            // Create a new token with the new text, but carry over the trivia (spaces, comments) from the old one.
-            var newIdentifierToken = SyntaxFactory.Identifier(
-                node.Identifier.LeadingTrivia,
-                newIdentifierText,
-                node.Identifier.TrailingTrivia);
-
-            // Replace the identifier token within the existing node to preserve its structure and formatting.
-            node = node.WithIdentifier(newIdentifierToken);
-        }
-        return base.VisitIdentifierName(node);
-    }
-
-    // Convert DependencyProperty.Register to BindableProperty.Create
-    // Replace your existing VisitInvocationExpression method with this one
-    public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
-    {
-        if (node.Expression is not MemberAccessExpressionSyntax memberAccess)
-        {
-            return base.VisitInvocationExpression(node);
-        }
-
-        bool isRegister = memberAccess.Name.Identifier.Text == "Register";
-        bool isRegisterAttached = memberAccess.Name.Identifier.Text == "RegisterAttached";
-
-        // Now this check will succeed because VisitIdentifierName hasn't changed it
-        if ((isRegister || isRegisterAttached) && memberAccess.Expression.ToString() == "DependencyProperty")
-        {
-            var newExpressionName = isRegisterAttached ? "BindableProperty.CreateAttached" : "BindableProperty.Create";
-            var newExpression = SyntaxFactory.ParseExpression(newExpressionName)
-                                            .WithTriviaFrom(node.Expression); // Preserve formatting
-
-            var uwpArguments = node.ArgumentList.Arguments;
-
-            if (uwpArguments.Count < 3)
-            {
-                return base.VisitInvocationExpression(node);
-            }
-
-            var mauiArguments = new List<ArgumentSyntax>
-            {
-                uwpArguments[0], // propertyName
-                uwpArguments[1], // returnType
-                uwpArguments[2]  // declaringType
-            };
-
-            // Check for PropertyMetadata to extract default value and propertyChanged handler
-            if (uwpArguments.Count > 3 && uwpArguments[3].Expression is ObjectCreationExpressionSyntax metadataCreation)
-            {
-                if (metadataCreation.ArgumentList != null && metadataCreation.ArgumentList.Arguments.Any())
-                {
-                    var metadataArgs = metadataCreation.ArgumentList.Arguments;
-
-                    // Argument 1: defaultValue
-                    mauiArguments.Add(metadataArgs[0]);
-
-                    // Argument 2 (if it exists): propertyChanged callback
-                    if (metadataArgs.Count > 1)
-                    {
-                        // To add propertyChanged, we must provide the parameters that come before it.
-                        // Add defaultBindingMode:
-                        mauiArguments.Add(
-                            SyntaxFactory.Argument(SyntaxFactory.ParseExpression("Microsoft.Maui.Controls.BindingMode.OneWay"))
-                        );
-
-                        // Add validateValue:
-                        mauiArguments.Add(
-                            SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression))
-                        );
-
-                        // Add the propertyChanged delegate itself
-                        mauiArguments.Add(metadataArgs[1]);
-                    }
-                }
-            }
-
-            var newArgumentList = SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(mauiArguments));
-
-            node = node.WithExpression(newExpression).WithArgumentList(newArgumentList.WithTriviaFrom(node.ArgumentList));
-        }
-
-        return base.VisitInvocationExpression(node);
-    }
-    
-    // Add this method to CSharpConversionRewriter
-    public override SyntaxNode VisitGenericName(GenericNameSyntax node)
-    {
-        // Specifically targets TypedEventHandler<T, U>
-        if (node.Identifier.Text == "TypedEventHandler" && node.TypeArgumentList.Arguments.Count == 2)
-        {
-            // Replace "TypedEventHandler" with "EventHandler"
-            var newIdentifier = SyntaxFactory.Identifier("EventHandler")
-                .WithTriviaFrom(node.Identifier);
-
-            // UWP: TypedEventHandler<Sender, Args>
-            // MAUI: EventHandler<Args>
-            // We need to get the second type argument from the UWP definition.
-            var eventArgsType = node.TypeArgumentList.Arguments[1];
-            
-            // Create a new type argument list containing only the second argument.
-            var newTypeArguments = SyntaxFactory.TypeArgumentList(SyntaxFactory.SingletonSeparatedList(eventArgsType));
-
-            return node.WithIdentifier(newIdentifier).WithTypeArgumentList(newTypeArguments);
-        }
-        
-        // For FontWeights.Bold -> FontAttributes.Bold
-        if (node.Identifier.Text == "FontWeights")
-        {
-            return SyntaxFactory.IdentifierName("FontAttributes");
-        }
-
-        return base.VisitGenericName(node);
-    }
-}
