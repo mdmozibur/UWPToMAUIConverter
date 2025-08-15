@@ -7,12 +7,24 @@ namespace UwpToMaui;
 public class CSharpConversionRewriter : CSharpSyntaxRewriter
 {
     private readonly Dictionary<string, string> _usingReplacements;
-    public string NameSpaceStr{ get; private set; }
-    public string ClassNameStr{ get; private set; }
+    public string NameSpaceStr { get; private set; }
+    public string ClassNameStr { get; private set; }
 
     public CSharpConversionRewriter(Dictionary<string, string> usingReplacements)
     {
         _usingReplacements = usingReplacements;
+    }
+
+    public override SyntaxNode VisitExpressionStatement(ExpressionStatementSyntax node)
+    {
+        if (node.Expression is AssignmentExpressionSyntax assignment)
+        {
+            if (assignment.Left.ToString() == "this.DefaultStyleKey")
+            {
+                return null;
+            }
+        }
+        return base.VisitExpressionStatement(node);
     }
 
     // Convert using statements like "using Windows.UI.Xaml;"
@@ -67,9 +79,9 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                     newBaseListTypes.Add(baseType.WithType(SyntaxFactory.ParseTypeName(value)));
                     listModified = true;
                 }
-                else if (baseTypeName == "Control" && UwpToMauiConverter.TemplatedControlClasses.Any(x => x.Class == ClassNameStr && x.NameSpace == NameSpaceStr))
+                else if (baseTypeName == "Control" && XamlConversionWriter.TemplatedControlClasses.Any(x => x.Class == ClassNameStr && x.NameSpace == NameSpaceStr))
                 {
-                    var cls_nm = UwpToMauiConverter.TemplatedControlClasses.FirstOrDefault(x => x.Class == ClassNameStr && x.NameSpace == NameSpaceStr);
+                    var cls_nm = XamlConversionWriter.TemplatedControlClasses.FirstOrDefault(x => x.Class == ClassNameStr && x.NameSpace == NameSpaceStr);
                     newBaseListTypes.Add(baseType.WithType(SyntaxFactory.ParseTypeName("TemplatedView")));
                     listModified = true;
                 }
@@ -137,6 +149,18 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             return base.VisitInvocationExpression(node);
         }
 
+        if (memberAccess.Name.Identifier.Text == "GoToState" &&
+            memberAccess.Expression.ToString() == "VisualStateManager" &&
+            node.ArgumentList.Arguments.Count == 3)
+        {
+            // UWP: GoToState(control, stateName, useTransitions)
+            // MAUI: GoToState(control, stateName)
+            // We remove the third argument.
+            var newArguments = node.ArgumentList.Arguments.Take(2);
+            var newArgumentList = SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(newArguments));
+            return node.WithArgumentList(newArgumentList);
+        }
+
         bool isRegister = memberAccess.Name.Identifier.Text == "Register";
         bool isRegisterAttached = memberAccess.Name.Identifier.Text == "RegisterAttached";
 
@@ -198,7 +222,7 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
 
         return base.VisitInvocationExpression(node);
     }
-    
+
     public override SyntaxNode VisitGenericName(GenericNameSyntax node)
     {
         // Specifically targets TypedEventHandler<T, U>
@@ -212,12 +236,60 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             // MAUI: EventHandler<Args>
             // We need to get the second type argument from the UWP definition.
             var eventArgsType = node.TypeArgumentList.Arguments[1];
-            
+
             // Create a new type argument list containing only the second argument.
             var newTypeArguments = SyntaxFactory.TypeArgumentList(SyntaxFactory.SingletonSeparatedList(eventArgsType));
 
             node = node.WithIdentifier(newIdentifier).WithTypeArgumentList(newTypeArguments);
         }
         return base.VisitGenericName(node);
+    }
+
+
+    /// <summary>
+    /// Converts UWP Visibility assignments to their .NET MAUI IsVisible equivalent.
+    /// e.g., "element.Visibility = bool.ToVisibility()" becomes "element.IsVisible = bool;"
+    /// </summary>
+    public override SyntaxNode VisitAssignmentExpression(AssignmentExpressionSyntax node)
+    {
+        var newLeft = node.Left;
+        var newRight = node.Right;
+        bool hasChanged = false;
+
+        if (node.Left is MemberAccessExpressionSyntax leftMemberAccess &&
+            leftMemberAccess.Name.Identifier.Text == "Visibility")
+        {
+            // If so, replace "Visibility" with "IsVisible".
+            newLeft = leftMemberAccess.WithName(SyntaxFactory.IdentifierName("IsVisible")
+                .WithTriviaFrom(leftMemberAccess.Name));
+            hasChanged = true;
+        }
+
+        // Check if the right side is a call to ".ToVisibility()".
+        if (node.Right is InvocationExpressionSyntax rightInvocation &&
+            rightInvocation.Expression is MemberAccessExpressionSyntax rightMemberAccess &&
+            rightMemberAccess.Name.Identifier.Text == "ToVisibility")
+        {
+            // If so, replace the entire call with the object it was called on.
+            // For example, in "myBool.ToVisibility()", we just want "myBool".
+            newRight = rightMemberAccess.Expression;
+            hasChanged = true;
+        }
+
+        else if (node.Right is MemberAccessExpressionSyntax memberAccessExpressionSyntax &&
+                memberAccessExpressionSyntax.Expression is IdentifierNameSyntax ins &&
+                ins.Identifier.Text == "Visibility")
+        {
+            newRight = SyntaxFactory.ParseName(memberAccessExpressionSyntax.Name.Identifier.Text == "Visible" ? "true" : "false");
+            hasChanged = true;
+        }
+
+        // If any changes were made, return a new assignment expression node.
+        if (hasChanged)
+        {
+            node = node.WithLeft(newLeft).WithRight(newRight);
+        }
+
+        return base.VisitAssignmentExpression(node);
     }
 }
