@@ -4,7 +4,7 @@ namespace UwpToMaui; // Assuming a namespace for organization
 
 public static class ResourceDictionaryConverter
 {
-    public static void Convert(XDocument doc, string destPath)
+    public static void Convert(XDocument doc, string destPath, bool is_generic_xaml)
     {
         // The root element is assumed to be <ResourceDictionary>
         // Namespaces and control names are handled by the calling method.

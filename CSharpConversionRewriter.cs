@@ -7,6 +7,8 @@ namespace UwpToMaui;
 public class CSharpConversionRewriter : CSharpSyntaxRewriter
 {
     private readonly Dictionary<string, string> _usingReplacements;
+    public string NameSpaceStr{ get; private set; }
+    public string ClassNameStr{ get; private set; }
 
     public CSharpConversionRewriter(Dictionary<string, string> usingReplacements)
     {
@@ -25,9 +27,34 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         return base.VisitUsingDirective(node);
     }
 
+    public override SyntaxNode? VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
+    {
+        NameSpaceStr = node.Name.ToString();
+        return base.VisitNamespaceDeclaration(node);
+    }
+
+    public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
+    {
+        List<ParameterSyntax> new_parameters = new List<ParameterSyntax>();
+        foreach (var prm in node.ParameterList.Parameters)
+        {
+            if (UwpToMauiConverter.CSharpClassReplacements.TryGetValue(prm.Identifier.Text, out string replace_class))
+            {
+                new_parameters.Add(prm.WithIdentifier(SyntaxFactory.Identifier(replace_class).WithTriviaFrom(prm.Identifier)));
+            }
+            else
+            {
+                new_parameters.Add(prm);
+            }
+        }
+        node = node.WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(new_parameters)));
+        return base.VisitMethodDeclaration(node);
+    }
+
     // Convert base classes like "public class MyView : Panel" to "... : Layout"
     public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
     {
+        ClassNameStr = node.Identifier.Text;
         if (node.BaseList != null)
         {
             var newBaseListTypes = new List<BaseTypeSyntax>();
@@ -35,9 +62,15 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             foreach (var baseType in node.BaseList.Types)
             {
                 string baseTypeName = baseType.Type.ToString();
-                if (UwpToMauiConverter.CSharpClassReplacements.ContainsKey(baseTypeName))
+                if (UwpToMauiConverter.CSharpClassReplacements.TryGetValue(baseTypeName, out string? value))
                 {
-                    newBaseListTypes.Add(baseType.WithType(SyntaxFactory.ParseTypeName(UwpToMauiConverter.CSharpClassReplacements[baseTypeName])));
+                    newBaseListTypes.Add(baseType.WithType(SyntaxFactory.ParseTypeName(value)));
+                    listModified = true;
+                }
+                else if (baseTypeName == "Control" && UwpToMauiConverter.TemplatedControlClasses.Any(x => x.Class == ClassNameStr && x.NameSpace == NameSpaceStr))
+                {
+                    var cls_nm = UwpToMauiConverter.TemplatedControlClasses.FirstOrDefault(x => x.Class == ClassNameStr && x.NameSpace == NameSpaceStr);
+                    newBaseListTypes.Add(baseType.WithType(SyntaxFactory.ParseTypeName("TemplatedView")));
                     listModified = true;
                 }
                 else
@@ -80,9 +113,9 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
     public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
     {
         string identifier = node.Identifier.Text;
-        if (UwpToMauiConverter.CSharpClassReplacements.ContainsKey(identifier))
+        if (UwpToMauiConverter.CSharpClassReplacements.TryGetValue(identifier, out string? value))
         {
-            string newIdentifierText = UwpToMauiConverter.CSharpClassReplacements[identifier];
+            string newIdentifierText = value;
 
             // Create a new token with the new text, but carry over the trivia (spaces, comments) from the old one.
             var newIdentifierToken = SyntaxFactory.Identifier(

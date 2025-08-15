@@ -26,6 +26,16 @@ public static class UwpToMauiConverter
         { "ScrollViewer", "ScrollView" },
     };
 
+    internal static readonly Dictionary<string, string> PointerEventMap = new()
+    {
+        { "PointerEntered", "PointerEntered" },
+        { "PointerExited", "PointerExited" },
+        { "PointerPressed", "PointerPressed" },
+        { "PointerMoved", "PointerMoved" },
+        { "PointerReleased", "PointerReleased" }
+        // Add other pointer events if needed, e.g., PointerCanceled
+    };
+
     // For renaming XAML attributes
     internal static readonly Dictionary<string, string> XamlPropertyReplacements = new()
     {
@@ -78,14 +88,17 @@ public static class UwpToMauiConverter
         { "FontIcon", "Label" },
         { "ScrollViewer", "ScrollView" },
         { "Panel", "Layout" },
-        { "ListViewItem", "ViewCell" },
         { "DependencyObject", "BindableObject" },
+        { "DependencyProperty", "BindableProperty" },
         { "RoutedEventArgs", "EventArgs" },
         { "Windows.UI.Color", "Microsoft.Maui.Graphics.Color" },
         { "Windows.UI.Text.FontWeights", "Microsoft.Maui.FontAttributes" },
         { "Orientation", "StackOrientation" },
         { "Thickness", "Microsoft.Maui.Thickness" }
     };
+
+    public record struct ClassName(string NameSpace, string Class);
+    public static List<ClassName> TemplatedControlClasses = new();
 
 
     public static void Main(string[] args)
@@ -170,6 +183,7 @@ public static class UwpToMauiConverter
             // Now, load the string with corrected namespaces into an XDocument
             XDocument doc = XDocument.Parse(content);
             XNamespace mauiNamespace = "http://schemas.microsoft.com/dotnet/2021/maui";
+            XNamespace xNamespace = "http://schemas.microsoft.com/dotnet/2021/maui/xaml";
 
             foreach (var element in doc.Descendants())
             {
@@ -178,6 +192,49 @@ public static class UwpToMauiConverter
                 if (XamlControlReplacements.TryGetValue(prevElemName, out var newControlName))
                 {
                     element.Name = mauiNamespace + newControlName;
+                }
+                
+                var pointerEventAttributes = element.Attributes()
+                    .Where(attr => PointerEventMap.ContainsKey(attr.Name.LocalName))
+                    .ToList();
+
+                if (false && pointerEventAttributes.Count != 0)
+                {
+                    // Get or create the <Element.GestureRecognizers> node.
+                    var gestureRecognizersNode = element.Element(element.Name + ".GestureRecognizers");
+                    if (gestureRecognizersNode == null)
+                    {
+                        gestureRecognizersNode = new XElement(element.Name + ".GestureRecognizers");
+                        element.Add(gestureRecognizersNode);
+                    }
+
+                    // Get or create the <PointerGestureRecognizer> node within the collection.
+                    var pgrNode = gestureRecognizersNode.Element(mauiNamespace + "PointerGestureRecognizer");
+                    if (pgrNode == null)
+                    {
+                        pgrNode = new XElement(mauiNamespace + "PointerGestureRecognizer");
+                        gestureRecognizersNode.Add(pgrNode);
+                    }
+                    
+                    // Ensure the element has an x:Name to be accessible from code-behind.
+                    if (element.Attribute(xNamespace + "Name") == null && element.Attribute("Name") != null)
+                    {
+                        // Promote UWP 'Name' to MAUI 'x:Name'
+                        var nameAttr = element.Attribute("Name");
+                        if (nameAttr != null)
+                        {
+                            element.SetAttributeValue(xNamespace + "Name", nameAttr.Value);
+                            nameAttr.Remove();
+                        }
+                    }
+
+
+                    // Move the event handlers from the element to the PointerGestureRecognizer.
+                    foreach (var attr in pointerEventAttributes)
+                    {
+                        pgrNode.SetAttributeValue(attr.Name.LocalName, attr.Value);
+                        attr.Remove(); // Remove the old attribute from the parent element.
+                    }
                 }
 
                 // 2. Rename Attributes (Properties)
@@ -210,7 +267,28 @@ public static class UwpToMauiConverter
             }
             if (doc.Root?.Name.LocalName == "ResourceDictionary")
             {
-                ResourceDictionaryConverter.Convert(doc, destPath);
+                if (sourcePath.EndsWith("Generic.xaml"))
+                {
+                    var styles = doc.Descendants()
+                    .Where(e => e.Name.LocalName == "Style" && e.Attributes().Where(a => a.Name.LocalName == "TargetType").FirstOrDefault() is not null)
+                    .Select(e => e.Attributes().FirstOrDefault(a => a.Name.LocalName == "TargetType").Value)
+                    .Where(x => x.Contains(':'))
+                    .ToArray();
+
+                    var namespace_maps = (doc.FirstNode as XElement)?.Attributes().ToDictionary(attr => attr.Name.LocalName, attr => attr.Value.Replace("clr-namespace:", string.Empty));
+
+                    for (int i = 0; i < styles.Length; i++)
+                    {
+                        var style_name = styles[i];
+                        var colon_index = style_name.IndexOf(':');
+                        var namespace_str = style_name[..colon_index];
+                        if (!namespace_maps.ContainsKey(namespace_str))
+                            continue;
+                        var class_name = style_name.Replace(namespace_str, namespace_maps[namespace_str]);
+                        TemplatedControlClasses.Add(new (namespace_maps[namespace_str], style_name[(colon_index + 1)..]));
+                    }
+                }
+                ResourceDictionaryConverter.Convert(doc, destPath, false);
             }
             else
             {
