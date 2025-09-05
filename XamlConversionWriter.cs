@@ -79,12 +79,14 @@ public class XamlConversionWriter(XDocument doc)
     };
     public record struct ClassName(string NameSpace, string Class);
     public static List<ClassName> TemplatedControlClasses = new();
+    internal static readonly Dictionary<string, List<string>> RadioButtonCheckedHandlers = new();
 
     public XDocument Document { get; } = doc;
     private readonly Dictionary<XElement, XElement> PointerGestureRecognizerNodes = new Dictionary<XElement, XElement>();
 
     public void BeginProcessing()
     {
+        var fullClassName = Document.Root.Attributes().Where(a => a.Name.LocalName == "Class").FirstOrDefault()?.Value;
         foreach (var element in doc.Descendants())
         {
             // 1. Rename Controls
@@ -123,6 +125,24 @@ public class XamlConversionWriter(XDocument doc)
                 }
 
                 element.SetAttributeValue(newAttributeName, newValue);
+            }
+
+            List<string> radioCheckedHandlers = [];
+            foreach (var attr in element.Attributes())
+            {
+                // New logic for RadioButton Checked event
+                if (element.Name.LocalName == "RadioButton" && attr.Name.LocalName == "Checked")
+                {
+                    radioCheckedHandlers.Add(attr.Value);
+                    attr.Remove();
+                    element.SetAttributeValue("CheckedChanged", attr.Value);
+                }
+            }
+            if(radioCheckedHandlers.Count > 0 )
+            {
+                if (!RadioButtonCheckedHandlers.ContainsKey(fullClassName))
+                    RadioButtonCheckedHandlers[fullClassName] = new List<string>();
+                RadioButtonCheckedHandlers[fullClassName].AddRange(radioCheckedHandlers);
             }
         }
 

@@ -88,9 +88,38 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             if (statement is ExpressionStatementSyntax exprStatement &&
                 exprStatement.Expression is AssignmentExpressionSyntax assignment &&
                 assignment.IsKind(SyntaxKind.AddAssignmentExpression) && // Checks for "+="
-                assignment.Left is MemberAccessExpressionSyntax memberAccess &&
-                XamlConversionWriter.PointerEventMap.Contains(memberAccess.Name.Identifier.Text))
+                assignment.Left is MemberAccessExpressionSyntax memberAccess)
             {
+                // logic for RadioButton event subscription
+                if (memberAccess.Name.Identifier.Text == "Checked")
+                {
+                    var handlerName = assignment.Right.ToString();
+
+                    var newMemberAccess = memberAccess.WithName(SyntaxFactory.IdentifierName("CheckedChanged"));
+                    var newAssignment = assignment.WithLeft(newMemberAccess);
+                    newStatements.Add(exprStatement.WithExpression(newAssignment));
+                    blockModified = true;
+
+                    if(XamlConversionWriter.RadioButtonCheckedHandlers.ContainsKey(NameSpaceStr + "." + ClassNameStr))
+                        XamlConversionWriter.RadioButtonCheckedHandlers[NameSpaceStr + "." + ClassNameStr].Add(handlerName);
+                    else
+                        XamlConversionWriter.RadioButtonCheckedHandlers[NameSpaceStr + "." + ClassNameStr] = [handlerName];
+                    continue; // Skip other logic for this statement
+                }
+                else if (memberAccess.Name.Identifier.Text == "Click")
+                {
+                    var handlerName = assignment.Right.ToString();
+
+                    var newMemberAccess = memberAccess.WithName(SyntaxFactory.IdentifierName("Clicked"));
+                    var newAssignment = assignment.WithLeft(newMemberAccess);
+                    newStatements.Add(exprStatement.WithExpression(newAssignment));
+                    blockModified = true;
+                    continue; // Skip other logic for this statement
+                }
+
+                if (!XamlConversionWriter.PointerEventMap.Contains(memberAccess.Name.Identifier.Text))
+                    continue;
+
                 blockModified = true; 
 
                 var elementIdentifier = memberAccess.Expression.ToString();
@@ -169,11 +198,44 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         return base.VisitNamespaceDeclaration(node);
     }
 
+    public override SyntaxNode VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
+    {
+        // This handles converting ".IsChecked.Value" to ".IsChecked"
+        if (node.Name.Identifier.Text == "Value" &&
+            node.Expression is MemberAccessExpressionSyntax innerAccess &&
+            innerAccess.Name.Identifier.Text == "IsChecked")
+        {
+            // Replace the entire node ("...IsChecked.Value") with just its expression ("...IsChecked")
+            return base.Visit(innerAccess);
+        }
+
+        return base.VisitMemberAccessExpression(node);
+    }
     public override SyntaxNode VisitMethodDeclaration(MethodDeclarationSyntax node)
     {
+
+        MethodDeclarationSyntax workingNode = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node);
+
+        // Handle RadioButton handler signature change
+        if (XamlConversionWriter.RadioButtonCheckedHandlers.TryGetValue(NameSpaceStr + "." + ClassNameStr, out var _radioButtonCheckedHandlers) &&
+        _radioButtonCheckedHandlers.Contains(workingNode.Identifier.Text) && workingNode.ParameterList.Parameters.Count == 2)
+        {
+            var secondParameter = workingNode.ParameterList.Parameters[1];
+            string paramType = secondParameter.Type.ToString();
+
+            if (paramType == "EventArgs" || paramType == "Windows.UI.Xaml.EventArgs")
+            {
+                var newParameterType = SyntaxFactory.ParseTypeName("CheckedChangedEventArgs").WithTriviaFrom(secondParameter.Type);
+                var newSecondParameter = secondParameter.WithType(newParameterType);
+                var newParameters = workingNode.ParameterList.Parameters.Replace(secondParameter, newSecondParameter);
+                workingNode = workingNode.WithParameterList(workingNode.ParameterList.WithParameters(newParameters));
+            }
+        }
+
+
         _elementToPgrMap.Clear();
         // Check if this method is a known property changed callback.
-        if (_propertyChangedCallbacks.ContainsValue(node.Identifier.Text))
+        if (_propertyChangedCallbacks.ContainsValue(workingNode.Identifier.Text))
         {
             // MAUI callbacks are static.
             var newModifiers = node.Modifiers;
@@ -209,12 +271,15 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                         .WithBody(newBody);
         }
 
-        return base.VisitMethodDeclaration(node);
+        return workingNode;
     }
     
 
     public override SyntaxNode VisitParameter(ParameterSyntax node)
     {
+        if(node.Type == null)
+            return base.VisitParameter(node);
+
         // Check if the parameter's type is the UWP pointer event argument type.
         string typeName = node.Type.ToString();
         if (typeName == "PointerRoutedEventArgs" || typeName == "Windows.UI.Xaml.Input.PointerRoutedEventArgs")
@@ -226,10 +291,19 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             // Return a new parameter node with the updated type.
             return node.WithType(newType);
         }
+        if (typeName == "RangeBaseValueChangedEventArgs" || typeName == "Windows.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs")
+        {
+            // Create the new MAUI type "PointerEventArgs", preserving the original's formatting.
+            var newType = SyntaxFactory.ParseTypeName("ValueChangedEventArgs")
+                .WithTriviaFrom(node.Type);
+
+            // Return a new parameter node with the updated type.
+            return node.WithType(newType);
+        }
 
         return base.VisitParameter(node);
     }
-    
+
     // Convert base classes like "public class MyView : Panel" to "... : Layout"
     public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
     {

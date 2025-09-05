@@ -33,6 +33,7 @@ public static class UwpToMauiConverter
         { "Orientation", "StackOrientation" },
         { "Thickness", "Microsoft.Maui.Thickness" }
     };
+    
 
     public static void Main(string[] args)
     {
