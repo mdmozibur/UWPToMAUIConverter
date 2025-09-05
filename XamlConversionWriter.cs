@@ -30,14 +30,13 @@ public class XamlConversionWriter(XDocument doc)
         { "ScrollViewer", "ScrollView" },
     };
 
-    internal static readonly Dictionary<string, string> PointerEventMap = new()
+    internal static readonly HashSet<string> PointerEventMap = new()
     {
-        { "PointerEntered", "PointerEntered" },
-        { "PointerExited", "PointerExited" },
-        { "PointerPressed", "PointerPressed" },
-        { "PointerMoved", "PointerMoved" },
-        { "PointerReleased", "PointerReleased" }
-        // Add other pointer events if needed, e.g., PointerCanceled
+        { "PointerEntered" },
+        { "PointerExited" },
+        { "PointerPressed" },
+        { "PointerMoved" },
+        { "PointerReleased" }
     };
 
     // For renaming XAML attributes
@@ -82,7 +81,7 @@ public class XamlConversionWriter(XDocument doc)
     public static List<ClassName> TemplatedControlClasses = new();
 
     public XDocument Document { get; } = doc;
-    private Dictionary<XElement, XElement> PointerGestureRecognizerNodes = new Dictionary<XElement, XElement>();
+    private readonly Dictionary<XElement, XElement> PointerGestureRecognizerNodes = new Dictionary<XElement, XElement>();
 
     public void BeginProcessing()
     {
@@ -165,7 +164,7 @@ public class XamlConversionWriter(XDocument doc)
     private void HandlePointerEvents(XElement element)
     {
         var pointerEventAttributes = element.Attributes()
-            .Where(attr => PointerEventMap.ContainsKey(attr.Name.LocalName))
+            .Where(attr => PointerEventMap.Contains(attr.Name.LocalName))
             .ToList();
 
         if (pointerEventAttributes.Count != 0)

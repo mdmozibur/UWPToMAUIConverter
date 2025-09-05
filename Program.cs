@@ -150,7 +150,13 @@ public static class UwpToMauiConverter
             SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
             var root = syntaxTree.GetRoot();
 
-            var rewriter = new CSharpConversionRewriter(CSharpUsingReplacements);
+            // Pass 1: Collect property changed callback information from the entire file.
+            var collector = new CallbackCollector();
+            collector.Visit(root);
+            var callbacks = collector.PropertyChangedCallbacks;
+
+            // Pass 2: Perform the actual conversion, passing the collected info to the rewriter.
+            var rewriter = new CSharpConversionRewriter(CSharpUsingReplacements, callbacks);
             var newRoot = rewriter.Visit(root);
 
             File.WriteAllText(destPath, newRoot.ToFullString());
