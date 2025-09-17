@@ -17,7 +17,19 @@ public class InstanceMemberCollector : CSharpSyntaxWalker
         }
         base.VisitPropertyDeclaration(node);
     }
-
+    
+    public override void VisitEventFieldDeclaration(EventFieldDeclarationSyntax node)
+    {
+        // If the event is not static, add its name to our list of instance members.
+        if (!node.Modifiers.Any(SyntaxKind.StaticKeyword))
+        {
+            foreach (var variable in node.Declaration.Variables)
+            {
+                InstanceMemberNames.Add(variable.Identifier.Text);
+            }
+        }
+        base.VisitEventFieldDeclaration(node);
+    }
     public override void VisitFieldDeclaration(FieldDeclarationSyntax node)
     {
         if (!node.Modifiers.Any(SyntaxKind.StaticKeyword))
@@ -43,6 +55,7 @@ public class InstanceMemberCollector : CSharpSyntaxWalker
 
 public class CSharpConversionRewriter : CSharpSyntaxRewriter
 {
+    private bool _isDataTemplateSelectorContext = false;
     private readonly Dictionary<string, string> _propertyChangedCallbacks;
     private readonly Dictionary<string, string> _usingReplacements;
     private readonly Dictionary<string, string> _elementToPgrMap = [];
@@ -76,6 +89,49 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         return base.VisitExpressionStatement(node);
     }
 
+    public override SyntaxNode VisitPropertyDeclaration(PropertyDeclarationSyntax node)
+    {
+        // Changes the CLR wrapper property's type from Visibility to bool.
+        // e.g., public Visibility MyProperty { ... } -> public bool MyProperty { ... }
+        if (node.Type.ToString() == "Visibility")
+        {
+            var newType = SyntaxFactory.ParseTypeName("bool").WithTriviaFrom(node.Type);
+            node = node.WithType(newType);
+        }
+        else if (node.Type.ToString() == "HorizontalAlignment")
+        {
+            var newType = SyntaxFactory.ParseTypeName("HorizontalOptions").WithTriviaFrom(node.Type);
+            node = node.WithType(newType);
+        }
+        else if (node.Type.ToString() == "VerticalAlignment")
+        {
+            var newType = SyntaxFactory.ParseTypeName("VerticalOptions").WithTriviaFrom(node.Type);
+            node = node.WithType(newType);
+        }
+        return base.VisitPropertyDeclaration(node);
+    }
+
+    public override SyntaxNode VisitCastExpression(CastExpressionSyntax node)
+    {
+        // Changes the cast inside the property's getter.
+        // e.g., (Visibility)GetValue(...) -> (bool)GetValue(...)
+        if (node.Type.ToString() == "Visibility")
+        {
+            var newType = SyntaxFactory.ParseTypeName("bool").WithTriviaFrom(node.Type);
+            return node.WithType(newType);
+        }
+        else if (node.Type.ToString() == "HorizontalAlignment")
+        {
+            var newType = SyntaxFactory.ParseTypeName("HorizontalOptions").WithTriviaFrom(node.Type);
+            return node.WithType(newType);
+        }
+        else if (node.Type.ToString() == "VerticalAlignment")
+        {
+            var newType = SyntaxFactory.ParseTypeName("VerticalOptions").WithTriviaFrom(node.Type);
+            return node.WithType(newType);
+        }
+        return base.VisitCastExpression(node);
+    }
 
     public override SyntaxNode VisitBlock(BlockSyntax node)
     {
@@ -106,7 +162,7 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                         XamlConversionWriter.RadioButtonCheckedHandlers[NameSpaceStr + "." + ClassNameStr] = [handlerName];
                     continue; // Skip other logic for this statement
                 }
-                else if (memberAccess.Name.Identifier.Text == "Click")
+                if (memberAccess.Name.Identifier.Text == "Click")
                 {
                     var handlerName = assignment.Right.ToString();
 
@@ -200,19 +256,51 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
     {
-        // This handles converting ".IsChecked.Value" to ".IsChecked"
+        // New logic for Visibility.Collapsed/Visible enum values
+        if (node.Expression.ToString() == "Visibility")
+        {
+            if (node.Name.Identifier.Text == "Collapsed")
+            {
+                return SyntaxFactory.LiteralExpression(SyntaxKind.FalseLiteralExpression)
+                    .WithTriviaFrom(node);
+            }
+            if (node.Name.Identifier.Text == "Visible")
+            {
+                return SyntaxFactory.LiteralExpression(SyntaxKind.TrueLiteralExpression)
+                    .WithTriviaFrom(node);
+            }
+        }
+
+        // Existing logic for ".IsChecked.Value"
         if (node.Name.Identifier.Text == "Value" &&
             node.Expression is MemberAccessExpressionSyntax innerAccess &&
             innerAccess.Name.Identifier.Text == "IsChecked")
         {
-            // Replace the entire node ("...IsChecked.Value") with just its expression ("...IsChecked")
             return base.Visit(innerAccess);
         }
 
         return base.VisitMemberAccessExpression(node);
     }
+    
     public override SyntaxNode VisitMethodDeclaration(MethodDeclarationSyntax node)
     {
+        // check for and handle the DataTemplateSelector method override
+        if (_isDataTemplateSelectorContext &&
+            node.Identifier.Text == "SelectTemplateCore" &&
+            node.ParameterList.Parameters.Count == 1)
+        {
+            // 1. Change the method name
+            var newIdentifier = SyntaxFactory.Identifier("OnSelectTemplate")
+                .WithTriviaFrom(node.Identifier);
+
+            // 2. Create the new parameter list for MAUI
+            var newParameters = SyntaxFactory.ParseParameterList("(object item, BindableObject container)")
+                .WithTriviaFrom(node.ParameterList);
+
+            // 3. Return the modified method node
+            return node.WithIdentifier(newIdentifier)
+                       .WithParameterList(newParameters);
+        }
 
         MethodDeclarationSyntax workingNode = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node);
 
@@ -241,7 +329,14 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             var newModifiers = node.Modifiers;
             if (!newModifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword)))
             {
-                newModifiers = newModifiers.Insert(0, SyntaxFactory.Token(SyntaxKind.StaticKeyword));
+                var staticToken = SyntaxFactory.Token(SyntaxKind.StaticKeyword);
+
+                // If there are other modifiers, add a space after 'static'.
+                if (newModifiers.Any())
+                {
+                    staticToken = staticToken.WithTrailingTrivia(SyntaxFactory.Space);
+                }
+                newModifiers = newModifiers.Insert(0, staticToken);
             }
 
             // MAUI callbacks have the signature (BindableObject, object, object).
@@ -255,8 +350,12 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             if (string.IsNullOrEmpty(instanceVarName)) instanceVarName = "instance"; // Fallback
 
             // Create the guard statement: "if (sender is not ColorListItem cli) return;"
+            var firstStatement = node.Body.Statements.FirstOrDefault();
+            var leadingTrivia = firstStatement?.GetLeadingTrivia() ?? node.Body.OpenBraceToken.TrailingTrivia;
+
             var guardStatement = SyntaxFactory.ParseStatement($"if (sender is not {ClassNameStr} {instanceVarName}) return;")
-                .WithLeadingTrivia(node.Body.GetLeadingTrivia());
+                .WithLeadingTrivia(leadingTrivia)
+                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
 
             // Use a dedicated rewriter to update the method body.
             var bodyRewriter = new CallbackBodyRewriter(instanceVarName, _instanceMemberNames, _instanceMethodNames, node);
@@ -265,6 +364,13 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             // Add the guard statement to the top of the rewritten body.
             newBody = newBody.WithStatements(newBody.Statements.Insert(0, guardStatement));
 
+            // Remove any leading newlines from the first statement since our guard statement now handles it.
+            if (newBody.Statements.Any())
+            {
+                var oldFirst = newBody.Statements[0];
+                var newFirst = oldFirst.WithLeadingTrivia(oldFirst.GetLeadingTrivia().Where(t => !t.IsKind(SyntaxKind.EndOfLineTrivia)));
+                newBody = newBody.WithStatements(newBody.Statements.Replace(oldFirst, newFirst));
+            }
             // Return the completely transformed method.
             return node.WithModifiers(newModifiers)
                         .WithParameterList(newParameters)
@@ -307,6 +413,7 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
     // Convert base classes like "public class MyView : Panel" to "... : Layout"
     public override SyntaxNode VisitClassDeclaration(ClassDeclarationSyntax node)
     {
+        bool wasInDTSContext = _isDataTemplateSelectorContext;
         ClassNameStr = node.Identifier.Text;
 
         // Before visiting the rest of the class, collect all instance-level fields and properties.
@@ -317,6 +424,11 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
 
         if (node.BaseList != null)
         {
+            if (node.BaseList.Types.Any(bt => bt.Type.ToString() == "DataTemplateSelector"))
+            {
+                _isDataTemplateSelectorContext = true;
+            }
+
             var newBaseListTypes = new List<BaseTypeSyntax>();
             bool listModified = false;
             foreach (var baseType in node.BaseList.Types)
@@ -346,6 +458,7 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                 node = node.WithBaseList(newBaseList);
             }
         }
+        _isDataTemplateSelectorContext = wasInDTSContext;
         return base.VisitClassDeclaration(node);
     }
 
@@ -434,6 +547,13 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                 uwpArguments[2]  // declaringType
             };
 
+            // Check if the property type is Visibility and modify the arguments list in place.
+            if ((mauiArguments[1].Expression as TypeOfExpressionSyntax)?.Type.ToString() == "Visibility")
+            {
+                // 1. Change the type argument from typeof(Visibility) to typeof(bool)
+                mauiArguments[1] = SyntaxFactory.Argument(SyntaxFactory.TypeOfExpression(SyntaxFactory.ParseTypeName("bool")));
+            }
+
             // Step 1: Find the callback method, regardless of its source.
             ArgumentSyntax callbackArgument = null;
             if (uwpArguments.Count > 3 && uwpArguments[3].Expression is ObjectCreationExpressionSyntax metadataCreation)
@@ -442,6 +562,25 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                 {
                     // A callback exists in the PropertyMetadata, e.g., new PropertyMetadata(0, OnFooChanged)
                     callbackArgument = metadataCreation.ArgumentList.Arguments[1];
+
+                    if ((mauiArguments[1].Expression as TypeOfExpressionSyntax)?.Type.ToString() == "Visibility")
+                    {
+                        // 2. Change the default value argument from Visibility.Collapsed/Visible to false/true
+                        var uwpDefaultValue = metadataCreation.ArgumentList.Arguments[0];
+                        ExpressionSyntax newDefaultValue = null;
+
+                        if (uwpDefaultValue.Expression.ToString().EndsWith("Collapsed"))
+                            newDefaultValue = SyntaxFactory.LiteralExpression(SyntaxKind.FalseLiteralExpression);
+                        else if (uwpDefaultValue.Expression.ToString().EndsWith("Visible"))
+                            newDefaultValue = SyntaxFactory.LiteralExpression(SyntaxKind.TrueLiteralExpression);
+                        
+                        if (newDefaultValue != null)
+                        {
+                            var newArgs = metadataCreation.ArgumentList.Arguments.Replace(uwpDefaultValue, uwpDefaultValue.WithExpression(newDefaultValue));
+                            var newMetadata = metadataCreation.WithArgumentList(metadataCreation.ArgumentList.WithArguments(newArgs));
+                            mauiArguments[3] = uwpArguments[3].WithExpression(newMetadata);
+                        }
+                    }
                 }
             }
 
@@ -562,82 +701,5 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         }
 
         return base.VisitAssignmentExpression(node);
-    }
-
-
-    /// <summary>
-    /// Rewrites the body of a property changed callback to use a projected instance variable.
-    /// </summary>
-    private class CallbackBodyRewriter : CSharpSyntaxRewriter
-    {
-        private readonly string _instanceName;
-        private readonly HashSet<string> _instanceMembers;
-        private readonly HashSet<string> _instanceMethods;
-        private readonly HashSet<string> _localAndParamNames = new();
-
-        public CallbackBodyRewriter(string instanceName, HashSet<string> instanceMembers, HashSet<string> instanceMethods, MethodDeclarationSyntax method)
-        {
-            _instanceName = instanceName;
-            _instanceMembers = instanceMembers;
-            _instanceMethods = instanceMethods;
-
-            // Collect all local variable and parameter names to avoid replacing them.
-            foreach (var param in method.ParameterList.Parameters)
-            {
-                _localAndParamNames.Add(param.Identifier.Text);
-            }
-            foreach (var variable in method.DescendantNodes().OfType<VariableDeclaratorSyntax>())
-            {
-                _localAndParamNames.Add(variable.Identifier.Text);
-            }
-        }
-
-        // Replace "this" with the new instance variable, e.g., "cli".
-        public override SyntaxNode VisitThisExpression(ThisExpressionSyntax node)
-        {
-            return SyntaxFactory.IdentifierName(_instanceName).WithTriviaFrom(node);
-        }
-
-        // Replace instance member access (e.g., "Label") with projected access (e.g., "cli.Label").
-        public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
-        {
-            var identifier = node.Identifier.Text;
-
-            // Only replace if it's a known instance member and NOT a local variable or parameter.
-            if (_instanceMembers.Contains(identifier) && !_localAndParamNames.Contains(identifier))
-            {
-                // Avoid replacing the "Name" part of "Expression.Name" (e.g., don't change "Root.Label" to "Root.cli.Label").
-                if (node.Parent is MemberAccessExpressionSyntax mae && mae.Name == node)
-                {
-                    return base.VisitIdentifierName(node);
-                }
-
-                // Prepend the instance name.
-                return SyntaxFactory.ParseExpression($"{_instanceName}.{identifier}").WithTriviaFrom(node);
-            }
-            return base.VisitIdentifierName(node);
-        }
-        public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
-        {
-            // Check if this is a simple method call like "MyMethod()" rather than "obj.MyMethod()"
-            if (node.Expression is IdentifierNameSyntax identifierName)
-            {
-                var methodName = identifierName.Identifier.Text;
-
-                // If the method name is in our list of instance methods...
-                if (_instanceMethods.Contains(methodName))
-                {
-                    // ...rewrite it from "MyMethod(...)" to "instance.MyMethod(...)"
-                    var newExpression = SyntaxFactory.MemberAccessExpression(
-                        SyntaxKind.SimpleMemberAccessExpression,
-                        SyntaxFactory.IdentifierName(_instanceName),
-                        identifierName
-                    ).WithTriviaFrom(identifierName);
-
-                    return node.WithExpression(newExpression);
-                }
-            }
-            return base.VisitInvocationExpression(node);
-        }
     }
 }
