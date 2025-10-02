@@ -4,55 +4,6 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace UwpToMaui;
 
-public class InstanceMemberCollector : CSharpSyntaxWalker
-{
-    public HashSet<string> InstanceMemberNames { get; } = new();
-    public HashSet<string> InstanceMethodNames { get; } = new();
-
-    public override void VisitPropertyDeclaration(PropertyDeclarationSyntax node)
-    {
-        if (!node.Modifiers.Any(SyntaxKind.StaticKeyword))
-        {
-            InstanceMemberNames.Add(node.Identifier.Text);
-        }
-        base.VisitPropertyDeclaration(node);
-    }
-    
-    public override void VisitEventFieldDeclaration(EventFieldDeclarationSyntax node)
-    {
-        // If the event is not static, add its name to our list of instance members.
-        if (!node.Modifiers.Any(SyntaxKind.StaticKeyword))
-        {
-            foreach (var variable in node.Declaration.Variables)
-            {
-                InstanceMemberNames.Add(variable.Identifier.Text);
-            }
-        }
-        base.VisitEventFieldDeclaration(node);
-    }
-    public override void VisitFieldDeclaration(FieldDeclarationSyntax node)
-    {
-        if (!node.Modifiers.Any(SyntaxKind.StaticKeyword))
-        {
-            foreach (var variable in node.Declaration.Variables)
-            {
-                InstanceMemberNames.Add(variable.Identifier.Text);
-            }
-        }
-        base.VisitFieldDeclaration(node);
-    }
-
-    public override void VisitMethodDeclaration(MethodDeclarationSyntax node)
-    {
-        // Collect non-static, non-constructor method names
-        if (!node.Modifiers.Any(SyntaxKind.StaticKeyword) && node.Identifier.Text != node.Parent.DescendantNodes().OfType<ClassDeclarationSyntax>().FirstOrDefault()?.Identifier.Text)
-        {
-            InstanceMethodNames.Add(node.Identifier.Text);
-        }
-        base.VisitMethodDeclaration(node);
-    }
-}
-
 public class CSharpConversionRewriter : CSharpSyntaxRewriter
 {
     private bool _isDataTemplateSelectorContext = false;
@@ -111,6 +62,18 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         return base.VisitPropertyDeclaration(node);
     }
 
+    public override SyntaxNode VisitQualifiedName(QualifiedNameSyntax node)
+    {
+        // This specifically finds "Windows.UI.Xaml.DataTemplate" and replaces it.
+        if (node.ToString() == "Windows.UI.Xaml.DataTemplate")
+        {
+            // Replace the entire qualified name with the simple identifier "DataTemplate".
+            return SyntaxFactory.IdentifierName("DataTemplate")
+                .WithTriviaFrom(node);
+        }
+        return base.VisitQualifiedName(node);
+    }
+
     public override SyntaxNode VisitCastExpression(CastExpressionSyntax node)
     {
         // Changes the cast inside the property's getter.
@@ -128,6 +91,11 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         else if (node.Type.ToString() == "VerticalAlignment")
         {
             var newType = SyntaxFactory.ParseTypeName("VerticalOptions").WithTriviaFrom(node.Type);
+            return node.WithType(newType);
+        }
+        else if (node.Type.ToString() == "UIElement")
+        {
+            var newType = SyntaxFactory.ParseTypeName("View").WithTriviaFrom(node.Type);
             return node.WithType(newType);
         }
         return base.VisitCastExpression(node);
@@ -236,14 +204,20 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
         // If no changes were made, continue the visit as normal.
         return base.VisitBlock(node);
     }
+    
     // Convert using statements like "using Windows.UI.Xaml;"
     public override SyntaxNode VisitUsingDirective(UsingDirectiveSyntax node)
     {
         string namespaceName = node.Name.ToString();
-        if (_usingReplacements.ContainsKey(namespaceName))
+        if (_usingReplacements.TryGetValue(namespaceName, out string? value))
         {
-            var newName = SyntaxFactory.ParseName(_usingReplacements[namespaceName]);
+            var newName = SyntaxFactory.ParseName(value);
             return node.WithName(newName);
+        }
+        else if (UwpToMauiConverter.CSharpUsingsToRemove.Contains(namespaceName))
+        {
+            // Remove this using directive by returning null.
+            return null;
         }
         return base.VisitUsingDirective(node);
     }
@@ -552,6 +526,11 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             {
                 // 1. Change the type argument from typeof(Visibility) to typeof(bool)
                 mauiArguments[1] = SyntaxFactory.Argument(SyntaxFactory.TypeOfExpression(SyntaxFactory.ParseTypeName("bool")));
+            }
+            else if ((mauiArguments[1].Expression as TypeOfExpressionSyntax)?.Type.ToString() == "UIElement")
+            {
+                // 1. Change the type argument from typeof(Visibility) to typeof(bool)
+                mauiArguments[1] = SyntaxFactory.Argument(SyntaxFactory.TypeOfExpression(SyntaxFactory.ParseTypeName("View")));
             }
 
             // Step 1: Find the callback method, regardless of its source.

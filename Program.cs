@@ -1,4 +1,4 @@
-﻿using System.Collections.Immutable;
+﻿
 using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -11,8 +11,26 @@ public static class UwpToMauiConverter
     internal static readonly Dictionary<string, string> CSharpUsingReplacements = new()
     {
         { "Windows.UI.Xaml.Controls", "Microsoft.Maui.Controls" },
-        { "Windows.UI.Xaml.Shapes", "Microsoft.Maui.Controls.Shapes" },
     };
+
+    internal static readonly HashSet<string> CSharpUsingsToRemove =
+    [
+        "Windows.UI.Xaml",
+        "Windows.UI.Xaml.Controls",
+        "Windows.UI.Xaml.Shapes",
+        "Windows.UI.Xaml.Data",
+        "Windows.UI.Xaml.Documents",
+        "Windows.UI.Xaml.Input",
+        "Windows.UI.Xaml.Media",
+        "System.Windows.Controls",
+        "System.Windows.Shapes",
+        "System.Windows.Data",
+        "System.Windows.Documents",
+        "System.Windows.Input",
+        "System.Windows.Media",
+        "System.Runtime.InteropServices.WindowsRuntime",
+        "Windows.UI.Xaml.Controls.Primitives"
+    ];
 
     // For converting base classes
     public static readonly Dictionary<string, string> CSharpClassReplacements = new()
@@ -21,6 +39,9 @@ public static class UwpToMauiConverter
         { "TextBlock", "Label" },
         { "TextBox", "Entry" },
         { "ListViewItem", "ViewCell" },
+        { "ListView", "CollectionView" },
+        { "ContentControl", "ContentView" },
+        { "ItemsControl", "ItemsView" },
         { "ComboBox", "Picker" },
         { "FontIcon", "Label" },
         { "ScrollViewer", "ScrollView" },

@@ -22,7 +22,6 @@ public class XamlConversionWriter(XDocument doc)
         { "Page", "ContentPage" },
         { "ScrollSensingListView", "CollectionView" },
         { "ScrollSensingListView.ItemTemplateSelector", "CollectionView.ItemTemplate" },
-        { "ScrollSensingListView.ItemContainerTransitions", "CollectionView.ItemContainerTransitions" },
         { "StackPanel", "StackLayout" },
         { "StackPanel.Resources", "StackLayout.Resources" },
         { "TextBlock", "Label" },
@@ -32,6 +31,9 @@ public class XamlConversionWriter(XDocument doc)
         { "ComboBox", "Picker" },
         { "FontIcon", "Label" },
         { "ScrollViewer", "ScrollView" },
+        { "ListView", "CollectionView" },
+        { "ListView.Header", "CollectionView.Header" },
+        { "ListView.ItemTemplateSelector", "CollectionView.ItemTemplate" },
     };
 
     internal static readonly HashSet<string> PointerEventMap = new()
