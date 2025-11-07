@@ -59,6 +59,16 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             var newType = SyntaxFactory.ParseTypeName("VerticalOptions").WithTriviaFrom(node.Type);
             node = node.WithType(newType);
         }
+        else if (node.Type.ToString() == "UIElement")
+        {
+            var newType = SyntaxFactory.ParseTypeName("View").WithTriviaFrom(node.Type);
+            node = node.WithType(newType);
+        }
+        else if (node.Type.ToString() == "IconElement")
+        {
+            var newType = SyntaxFactory.ParseTypeName("ImageSource").WithTriviaFrom(node.Type);
+            node = node.WithType(newType);
+        }
         return base.VisitPropertyDeclaration(node);
     }
 
@@ -98,6 +108,11 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             var newType = SyntaxFactory.ParseTypeName("View").WithTriviaFrom(node.Type);
             return node.WithType(newType);
         }
+        else if (node.Type.ToString() == "IconElement")
+        {
+            var newType = SyntaxFactory.ParseTypeName("ImageSource").WithTriviaFrom(node.Type);
+            return node.WithType(newType);
+        }
         return base.VisitCastExpression(node);
     }
 
@@ -124,7 +139,7 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                     newStatements.Add(exprStatement.WithExpression(newAssignment));
                     blockModified = true;
 
-                    if(XamlConversionWriter.RadioButtonCheckedHandlers.ContainsKey(NameSpaceStr + "." + ClassNameStr))
+                    if (XamlConversionWriter.RadioButtonCheckedHandlers.ContainsKey(NameSpaceStr + "." + ClassNameStr))
                         XamlConversionWriter.RadioButtonCheckedHandlers[NameSpaceStr + "." + ClassNameStr].Add(handlerName);
                     else
                         XamlConversionWriter.RadioButtonCheckedHandlers[NameSpaceStr + "." + ClassNameStr] = [handlerName];
@@ -144,7 +159,7 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
                 if (!XamlConversionWriter.PointerEventMap.Contains(memberAccess.Name.Identifier.Text))
                     continue;
 
-                blockModified = true; 
+                blockModified = true;
 
                 var elementIdentifier = memberAccess.Expression.ToString();
 
@@ -485,6 +500,18 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             return base.VisitInvocationExpression(node);
         }
 
+        // UWP: Dispatcher.RunAsync(...) -> MAUI: MainThread.BeginInvokeOnMainThread(...)
+        if (memberAccess.Name.Identifier.Text == "RunAsync" &&
+            memberAccess.Expression.ToString().EndsWith("Dispatcher") &&
+            node.ArgumentList.Arguments.Count == 2)
+        {
+            var callbackArgument = node.ArgumentList.Arguments[1]; // Get the lambda
+            var newExpression = SyntaxFactory.ParseExpression("MainThread.BeginInvokeOnMainThread");
+            var newArgumentList = SyntaxFactory.ArgumentList(SyntaxFactory.SingletonSeparatedList(callbackArgument));
+
+            return node.WithExpression(newExpression).WithArgumentList(newArgumentList);
+        }
+        
         if (memberAccess.Name.Identifier.Text == "GoToState" &&
             memberAccess.Expression.ToString() == "VisualStateManager" &&
             node.ArgumentList.Arguments.Count == 3)
@@ -531,6 +558,11 @@ public class CSharpConversionRewriter : CSharpSyntaxRewriter
             {
                 // 1. Change the type argument from typeof(Visibility) to typeof(bool)
                 mauiArguments[1] = SyntaxFactory.Argument(SyntaxFactory.TypeOfExpression(SyntaxFactory.ParseTypeName("View")));
+            }
+            else if ((mauiArguments[1].Expression as TypeOfExpressionSyntax)?.Type.ToString() == "IconElement")
+            {
+                // 1. Change the type argument from typeof(Visibility) to typeof(bool)
+                mauiArguments[1] = SyntaxFactory.Argument(SyntaxFactory.TypeOfExpression(SyntaxFactory.ParseTypeName("ImageSource")));
             }
 
             // Step 1: Find the callback method, regardless of its source.

@@ -1,4 +1,5 @@
 ﻿
+using System.Xml;
 using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -10,12 +11,12 @@ public static class UwpToMauiConverter
     // Mappings for C# file conversions
     internal static readonly Dictionary<string, string> CSharpUsingReplacements = new()
     {
-        { "Windows.UI.Xaml.Controls", "Microsoft.Maui.Controls" },
     };
 
     internal static readonly HashSet<string> CSharpUsingsToRemove =
     [
         "Windows.UI.Xaml",
+        "Windows.Storage",
         "Windows.UI.Xaml.Controls",
         "Windows.UI.Xaml.Shapes",
         "Windows.UI.Xaml.Data",
@@ -29,7 +30,13 @@ public static class UwpToMauiConverter
         "System.Windows.Input",
         "System.Windows.Media",
         "System.Runtime.InteropServices.WindowsRuntime",
-        "Windows.UI.Xaml.Controls.Primitives"
+        "Windows.UI.Xaml.Controls.Primitives",
+        "SmartCad2D.Views.ItemTemplates",
+        "System",
+        "System.Collections.Generic",
+        "System.Linq",
+        "System.Numerics",
+        "System.Threading.Tasks"
     ];
 
     // For converting base classes
@@ -52,6 +59,7 @@ public static class UwpToMauiConverter
         { "Windows.UI.Color", "Microsoft.Maui.Graphics.Color" },
         { "Windows.UI.Text.FontWeights", "Microsoft.Maui.FontAttributes" },
         { "Orientation", "StackOrientation" },
+        { "Windows.UI.Xaml.EventArgs", "EventArgs" },
         { "Thickness", "Microsoft.Maui.Thickness" }
     };
     
@@ -154,7 +162,16 @@ public static class UwpToMauiConverter
             }
             else
             {
-                doc.Save(destPath);
+                var settings = new XmlWriterSettings
+                {
+                    Indent = true,
+                    IndentChars = "  ", // Use 2 spaces for indentation
+                    NewLineOnAttributes = true,
+                    OmitXmlDeclaration = true // MAUI XAML files don't need the <?xml ...?> declaration
+                };
+
+                using var writer = XmlWriter.Create(destPath, settings);
+                doc.WriteTo(writer);
             }
         }
         catch (Exception ex)
